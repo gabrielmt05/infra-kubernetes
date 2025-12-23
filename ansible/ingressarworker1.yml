@@ -1,0 +1,8 @@
+- hosts: worker1
+  become: yes
+  tasks:
+    - name: "Ingressando no cluster (Direto da pasta compartilhada)"
+      # Note que agora apontamos direto para o /vagrant
+      command: sh /vagrant/join-command
+      args:
+        creates: /etc/kubernetes/kubelet.conf

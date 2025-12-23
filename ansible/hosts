@@ -1,0 +1,12 @@
+[masters]
+master ansible_connection=local ansible_host=127.0.0.1 node_ip=192.168.154.100
+
+[workers]
+worker1 ansible_host=192.168.154.101 node_ip=192.168.154.101 ansible_ssh_private_key_file="~/.ssh/id_ed25519"
+worker2 ansible_host=192.168.154.102 node_ip=192.168.154.102 ansible_ssh_private_key_file="~/.ssh/id_ed25519"
+
+[all:vars]
+ip_master=192.168.154.100
+ansible_user=vagrant
+ansible_ssh_pass=vagrant
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'

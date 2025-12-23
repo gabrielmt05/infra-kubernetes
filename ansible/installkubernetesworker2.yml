@@ -1,0 +1,122 @@
+- name: "Instalar kubernetes nos workers"
+  hosts: worker2
+  become: yes
+  tasks:
+    - name: "Instalar dependências do sistema"
+      apt:
+        name:
+          - conntrack
+          - socat
+          - ebtables
+          - ipset
+          - curl
+          - gpg
+          - containerd
+        state: present
+        update_cache: yes
+      register: apt_action
+      retries: 10
+      delay: 5
+      until: apt_action is success
+
+    - name: "Desativar Swap temporariamente"
+      command: swapoff -a
+
+    - name: "Desativar Swap permanentemente no /etc/fstab"
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+        replace: '# \1'
+  
+    - name: "Carregar módulos do kernel"
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - overlay
+        - br_netfilter
+
+    - name: "Garantir que módulos carreguem no boot"
+      copy:
+        content: |
+          overlay
+          br_netfilter
+        dest: /etc/modules-load.d/k8s.conf
+
+    - name: "Configurar sysctl para rede Kubernetes"
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+        sysctl_file: /etc/sysctl.d/k8s.conf
+      loop:
+        - { name: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+        - { name: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+        - { name: 'net.ipv4.ip_forward', value: '1' }
+
+    - name: "Criar diretório para keyrings"
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: "Baixar chave GPG do Kubernetes (v1.35)"
+      shell: |
+        # ATUALIZADO PARA v1.35 NA URL ABAIXO
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.35/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg 
+
+    - name: "Adicionar repositório oficial do Kubernetes (v1.35)"
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.35/deb/ /"
+        filename: kubernetes
+        state: present
+
+    - name: "Instalar kubelet kubeadm kubectl"
+      apt: 
+        name:
+          - kubelet 
+          - kubeadm 
+          - kubectl
+        state: present
+        update_cache: yes
+
+    - name: "Configurar IP do node"
+      lineinfile:
+        path: /etc/default/kubelet
+        create: yes
+        line: KUBELET_EXTRA_ARGS=--node-ip={{ node_ip }}
+      notify: Reiniciar Kubelet
+
+    - name: "Configurar Containerd (Systemd e Pause Image)"
+      shell: |
+        mkdir -p /etc/containerd
+        containerd config default > /etc/containerd/config.toml
+        
+        # Habilita SystemdCgroup
+        sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+        
+        # Força imagem pause:3.10 (Vital para K8s 1.31)
+        sed -i 's|registry.k8s.io/pause:3.6|registry.k8s.io/pause:3.10|g' /etc/containerd/config.toml
+        sed -i 's|registry.k8s.io/pause:3.8|registry.k8s.io/pause:3.10|g' /etc/containerd/config.toml
+      notify: Reiniciar Containerd
+
+    - name: "Forçar reinicio do Containerd"
+      service:
+        name: containerd
+        state: restarted
+        enabled: yes
+        
+  handlers:
+    - name: "Reiniciar Kubelet"
+      service:
+        name: kubelet
+        state: restarted
+        daemon_reload: yes
+
+    - name: Reiniciar Containerd
+      service:
+        name: containerd
+        state: restarted

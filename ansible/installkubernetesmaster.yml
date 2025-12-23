@@ -1,0 +1,153 @@
+- name: "Instalar Kubernetes Master"
+  hosts: master
+  become: yes
+  vars:
+    ip_master: 192.168.154.100
+    ansible_user: vagrant
+    ansible_ssh_pass: vagrant
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+  tasks:
+    - name: "Instalar dependências do sistema"
+      apt:
+        name:
+          - conntrack
+          - socat
+          - ebtables
+          - ipset
+          - curl
+          - gpg
+          - containerd
+        state: present
+        update_cache: yes
+
+    - name: "Desativar Swap temporariamente"
+      command: swapoff -a
+
+    - name: "Desativar Swap permanentemente no /etc/fstab"
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+        replace: '# \1'
+  
+    - name: "Carregar módulos do kernel"
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - overlay
+        - br_netfilter
+
+    - name: "Garantir que módulos carreguem no boot"
+      copy:
+        content: |
+          overlay
+          br_netfilter
+        dest: /etc/modules-load.d/k8s.conf
+
+    - name: "Configurar sysctl para rede Kubernetes"
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+        sysctl_file: /etc/sysctl.d/k8s.conf
+      loop:
+        - { name: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+        - { name: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+        - { name: 'net.ipv4.ip_forward', value: '1' }
+
+    - name: "Criar diretório para keyrings"
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Baixar chave GPG do Kubernetes (v1.35)
+      shell: |
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.35/deb/Release.key | gpg --dearmor --batch --yes -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: "Adicionar repositório oficial do Kubernetes (v1.35)"
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.35/deb/ /"
+        filename: kubernetes
+        state: present
+
+    - name: "Instalar kubelet kubeadm kubectl"
+      apt: 
+        name:
+          - kubelet 
+          - kubeadm 
+          - kubectl
+        state: present
+        update_cache: yes
+
+    - name: "Configurar IP do node no Kubelet (Vagrant)"
+      lineinfile:
+        path: /etc/default/kubelet
+        create: yes
+        line: KUBELET_EXTRA_ARGS=--node-ip={{ ip_master }}
+      notify: Reiniciar Kubelet
+
+    - name: "Gerar config padrão do containerd"
+      shell: |
+        mkdir -p /etc/containerd
+        containerd config default > /etc/containerd/config.toml
+        sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+      notify: Reiniciar Containerd
+
+    - name: "Forçar reinicio do Containerd antes do init"
+      service:
+        name: containerd
+        state: restarted
+        enabled: yes
+
+    - name: "Iniciando Cluster (kubeadm init)"
+      command: >
+        kubeadm init 
+        --apiserver-advertise-address="192.168.154.100" 
+        --apiserver-cert-extra-sans="127.0.0.1" 
+        --node-name k8s-master 
+        --pod-network-cidr=192.168.0.0/16
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: "Configurar o kubeconfig para o usuario vagrant"
+      shell: |
+        mkdir -p /home/vagrant/.kube
+        cp -f /etc/kubernetes/admin.conf /home/vagrant/.kube/config
+        chown vagrant:vagrant /home/vagrant/.kube/config
+
+    - name: "Aguardar o Control Plane estar pronto (Porta 6443)"
+      wait_for:
+        host: "192.168.154.100"
+        port: 6443
+        delay: 10       
+        timeout: 300    
+        state: started
+
+    - name: Instalar Weave Net Network Plugin
+      become: false
+      command: kubectl apply -f https://github.com/weaveworks/weave/releases/download/v2.8.1/weave-daemonset-k8s.yaml
+      environment:
+        KUBECONFIG: /home/vagrant/.kube/config
+
+    - name: "Gerar comando Join"
+      command: kubeadm token create --print-join-command
+      register: join_command
+
+    - name: Copiando token para arquivo local
+      local_action: copy content="{{ join_command.stdout_lines[0] }}" dest="./join-command.sh"
+
+  handlers:
+    - name: "Reiniciar Kubelet"
+      service:
+        name: kubelet
+        state: restarted
+        daemon_reload: yes
+
+    - name: Reiniciar Containerd
+      service:
+        name: containerd
+        state: restarted
