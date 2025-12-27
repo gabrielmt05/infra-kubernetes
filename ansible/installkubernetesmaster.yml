@@ -80,6 +80,7 @@
           - kubelet 
           - kubeadm 
           - kubectl
+          - etcd-client
         state: present
         update_cache: yes
 

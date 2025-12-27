@@ -1,3 +1,4 @@
 .vagrant/
 join-command
 ./ansible/join-command.sh
+./pods

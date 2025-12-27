@@ -61,6 +61,8 @@
         name: vagrant
         groups: docker
         append: yes
+      tags:
+        - adionar_user
 
     - name: "Reiniciar e habilitar serviço do Docker"
       service:
