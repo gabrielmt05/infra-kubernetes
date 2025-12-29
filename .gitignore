@@ -2,3 +2,5 @@
 join-command
 ./ansible/join-command.sh
 pods/
+namespaces/
+backup/
